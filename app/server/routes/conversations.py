@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
+from app.agents.validator import get_validator
 from app.database.connection import get_db
 from app.database.models import Conversation, ConversationStatus, Turn
 from app.schemas import (
@@ -21,6 +22,7 @@ from app.schemas import (
     StartConversationRequest,
     StartConversationResponse,
 )
+from app.agents.orchestrator import get_orchestrator
 from app.schemas.state import ConversationStateManager
 
 router = APIRouter()
@@ -37,6 +39,34 @@ async def start_conversation(
     Returns conversation_id and initial message based on intent.
     """
     try:
+        # If user provided an initial message, validate it first
+        if request.initial_message:
+            validator = get_validator()
+            validation_result = validator.validate_user_message(
+                request.initial_message, 
+                ConversationIntent.GENERAL
+            )
+            
+            if not validation_result.is_valid:
+                # Create conversation but return validation message
+                conversation = Conversation(
+                    id=str(uuid4()),
+                    user_id=request.user_id,
+                    status=ConversationStatus.ACTIVE,
+                    current_intent=ConversationIntent.GENERAL,
+                    current_phase=ConversationPhase.INTENT_DETECTION
+                )
+                db.add(conversation)
+                db.commit()
+                
+                return StartConversationResponse(
+                    conversation_id=conversation.id,
+                    message=validation_result.message,
+                    intent=ConversationIntent.GENERAL,
+                    phase=ConversationPhase.INTENT_DETECTION,
+                    next_required=[]
+                )
+        
         # Detect intent from initial message or use provided intent
         if request.initial_message:
             detected_intent = ConversationStateManager.detect_intent_from_message(
@@ -132,36 +162,23 @@ async def send_message(
         if conversation.status != ConversationStatus.ACTIVE:
             raise HTTPException(status_code=400, detail="Conversation is not active")
         
+        # Use orchestrator to process the message
+        orchestrator = get_orchestrator()
+        agent_response = orchestrator.process_user_message(
+            conversation_id, 
+            request.message, 
+            db
+        )
+        
+        # Update conversation phase if changed
+        if agent_response.next_phase:
+            conversation.current_phase = agent_response.next_phase
+            db.commit()
+        
         # Get turn count for this conversation
         turn_count = db.query(Turn).filter(
             Turn.conversation_id == conversation_id
         ).count()
-        
-        # For now, this is a placeholder response
-        # In Hour 1.5-3.5, we'll implement the actual Orchestrator agent here
-        
-        # Simple intent detection if we're in general mode
-        if conversation.current_intent == ConversationIntent.GENERAL:
-            detected_intent = ConversationStateManager.detect_intent_from_message(request.message)
-            if detected_intent != ConversationIntent.GENERAL:
-                conversation.current_intent = detected_intent
-                conversation.current_phase = ConversationPhase.DATA_COLLECTION
-                
-                service_description = ConversationStateManager.get_service_description(detected_intent)
-                agent_response = f"Perfect! {service_description}"
-                
-                # Get questions for the new intent
-                missing_questions = ConversationStateManager.get_prioritized_questions(
-                    detected_intent, [], max_questions=3
-                )
-                if missing_questions:
-                    questions_text = "\n".join([f"• {q}" for q in missing_questions])
-                    agent_response += f"\n\nTo get started, I need to know:\n{questions_text}"
-            else:
-                agent_response = "I'd be happy to help! Could you let me know if you're looking for:\n\n• **Destination recommendations** - I can suggest places to visit\n• **Packing help** - I can create a personalized packing list\n• **Attraction suggestions** - I can recommend things to do\n\nWhich of these interests you?"
-        else:
-            # Placeholder response for active services
-            agent_response = f"Thank you for your message about {conversation.current_intent.value.replace('_', ' ')}. I'm processing your request and will provide personalized recommendations soon!"
         
         # Create new turn
         new_turn = Turn(
@@ -169,7 +186,7 @@ async def send_message(
             conversation_id=conversation_id,
             turn_number=turn_count + 1,
             user_message=request.message,
-            agent_response=agent_response,
+            agent_response=agent_response.message,
             intent=conversation.current_intent,
             phase=conversation.current_phase
         )
@@ -178,21 +195,17 @@ async def send_message(
         db.commit()
         
         # Update conversation timestamp
-        conversation.updated_at = db.query(func.now()).scalar()
+        conversation.updated_at = func.now()
         db.commit()
-        
-        next_required = ConversationStateManager.get_required_slots(
-            conversation.current_intent, conversation.current_phase
-        )
         
         logger.info(f"Processed message for conversation {conversation_id}")
         
         return SendMessageResponse(
-            agent_response=agent_response,
+            agent_response=agent_response.message,
             intent=conversation.current_intent,
             phase=conversation.current_phase,
-            next_required=next_required,
-            missing_slots=[],  # Will be implemented with actual state tracking
+            next_required=[],  # Will be implemented later
+            missing_slots=[],
             tool_outputs=[],
             uncertainty_flags=[],
             ready_for_next_service=False
