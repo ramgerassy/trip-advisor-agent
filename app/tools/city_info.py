@@ -3,7 +3,6 @@ City information tool using Wikipedia API with LLM fallback.
 """
 import logging
 import re
-from typing import List, Optional
 
 import httpx
 from app.tools.base import BaseTool, ToolResult

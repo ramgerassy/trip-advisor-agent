@@ -3,7 +3,7 @@ FastAPI routes for conversation management.
 """
 import json
 import logging
-from typing import List
+from typing import Any, Dict, List
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -266,7 +266,71 @@ async def get_conversation(
         raise HTTPException(status_code=500, detail="Failed to get conversation")
 
 
-@router.get("/conversations", response_model=List[GetConversationResponse])
+@router.post("/conversations/{conversation_id}/resume", response_model=SendMessageResponse)
+async def resume_conversation(
+    conversation_id: str,
+    db: Session = Depends(get_db)
+) -> SendMessageResponse:
+    """
+    Resume an existing conversation by loading its state.
+    """
+    try:
+        orchestrator = get_orchestrator()
+        resume_result = orchestrator.resume_conversation(conversation_id, db)
+        
+        if "error" in resume_result:
+            raise HTTPException(status_code=400, detail=resume_result["error"])
+        
+        return SendMessageResponse(
+            agent_response=resume_result["resume_message"],
+            intent=resume_result["intent"],
+            phase=resume_result["phase"],
+            next_required=[],
+            missing_slots=[],
+            tool_outputs=[],
+            uncertainty_flags=[],
+            ready_for_next_service=False
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in resume endpoint: {e}")
+        raise HTTPException(status_code=500, detail="Failed to resume conversation")
+
+
+@router.get("/conversations/{conversation_id}/context")
+async def get_conversation_context(
+    conversation_id: str,
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Get conversation context and synopsis for debugging/monitoring.
+    """
+    try:
+        orchestrator = get_orchestrator()
+        resume_result = orchestrator.resume_conversation(conversation_id, db)
+        
+        if "error" in resume_result:
+            raise HTTPException(status_code=404, detail=resume_result["error"])
+        
+        # Remove sensitive internal data for public endpoint
+        public_context = {
+            "conversation_id": resume_result["conversation_id"],
+            "intent": resume_result["intent"].value,
+            "phase": resume_result["phase"].value,
+            "synopsis": resume_result["synopsis"],
+            "turn_count": resume_result["turn_count"],
+            "resumable": resume_result["resumable"]
+        }
+        
+        return public_context
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting conversation context: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get conversation context")
 async def list_conversations(
     user_id: str = None,
     limit: int = 50,
