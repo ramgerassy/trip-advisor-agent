@@ -1,5 +1,5 @@
 """
-Simple LangChain LLM client for Ollama.
+LangChain LLM clients for different purposes.
 """
 import logging
 from typing import Optional
@@ -11,17 +11,33 @@ logger = logging.getLogger(__name__)
 
 
 def get_llm() -> OllamaLLM:
-    """Get a configured Ollama LLM instance."""
+    """Get a configured Ollama LLM instance for conversations (temperature=0.7)."""
     try:
         llm = OllamaLLM(
             base_url=settings.OLLAMA_BASE_URL,
             model=settings.OLLAMA_MODEL,
-            temperature=0.3,
+            temperature=0.7,
         )
-        logger.info(f"Created Ollama LLM with model {settings.OLLAMA_MODEL}")
+        logger.info(f"Created conversational LLM with model {settings.OLLAMA_MODEL}")
         return llm
     except Exception as e:
-        logger.error(f"Failed to create LLM: {e}")
+        logger.error(f"Failed to create conversational LLM: {e}")
+        raise
+
+
+def get_factual_llm() -> OllamaLLM:
+    """Get a configured Ollama LLM instance for factual queries (temperature=0)."""
+    try:
+        llm = OllamaLLM(
+            base_url=settings.OLLAMA_BASE_URL,
+            model=settings.OLLAMA_MODEL,
+            temperature=0,  # Deterministic for factual data
+            top_p=1.0,      # No sampling randomness
+        )
+        logger.info(f"Created factual LLM with model {settings.OLLAMA_MODEL}")
+        return llm
+    except Exception as e:
+        logger.error(f"Failed to create factual LLM: {e}")
         raise
 
 
