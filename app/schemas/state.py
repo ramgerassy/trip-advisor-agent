@@ -180,7 +180,6 @@ class ConversationStateManager:
     @staticmethod
     def get_prioritized_questions(intent: ConversationIntent, collected_slots: List[str], max_questions: int = 3) -> List[str]:
         """Get the most important questions first, limited to max_questions."""
-        all_questions = ConversationStateManager.get_next_questions(intent, collected_slots)
         
         # Define priority order for each service
         priority_order = {
@@ -198,6 +197,10 @@ class ConversationStateManager:
         service_questions = SERVICE_QUESTIONS.get(intent, {})
         priority_slots = priority_order.get(intent, list(service_questions.keys()))
         
+        # For attractions, if we have destination, reduce questions significantly
+        if intent == ConversationIntent.ATTRACTIONS and "destination" in collected_slots:
+            max_questions = min(max_questions, 1)  # Only ask 1 more question if destination is known
+        
         # Get questions in priority order, limited to max_questions
         prioritized_questions = []
         for slot in priority_slots:
@@ -205,37 +208,57 @@ class ConversationStateManager:
                 prioritized_questions.append(service_questions[slot])
                 if len(prioritized_questions) >= max_questions:
                     break
+        
+        # If we have enough data for processing, don't ask too many questions
+        minimum_required = MINIMUM_SLOTS_FOR_PROCESSING.get(intent, [])
+        has_minimum = all(slot in collected_slots for slot in minimum_required)
+        if has_minimum and len(prioritized_questions) > 1:
+            prioritized_questions = prioritized_questions[:1]  # Only ask 1 more question
                     
         return prioritized_questions
     
     @staticmethod
     def detect_intent_from_message(message: str) -> ConversationIntent:
-        """Simple intent detection from user message."""
+        """Context-aware intent detection from user message."""
         message_lower = message.lower()
         
-        # Destination recommendation keywords
-        if any(word in message_lower for word in [
-            "where to go", "destination", "recommend", "suggest a place", 
-            "where should i travel", "help me choose", "pick a destination"
-        ]):
-            return ConversationIntent.DESTINATION_RECOMMENDATION
-            
-        # Packing list keywords
-        elif any(word in message_lower for word in [
-            "pack", "packing", "what to bring", "luggage", "suitcase", 
-            "backpack", "what should i take", "packing list"
-        ]):
-            return ConversationIntent.PACKING_LIST
-            
-        # Attractions keywords
-        elif any(word in message_lower for word in [
-            "attractions", "things to do", "activities", "sightseeing", 
-            "visit", "see", "itinerary", "places to visit"
-        ]):
+        # More specific attraction patterns (check first to avoid false positives)
+        attraction_patterns = [
+            "attractions", "things to do", "activities", "sightseeing",
+            "places to visit", "museums", "galleries", "what can i visit",
+            "best attractions", "looking for museums", "what to see", "tourist spots",
+            "recommendations for activities", "attraction recommendations"
+        ]
+        
+        # Check for attractions intent with specific context
+        if (any(pattern in message_lower for pattern in attraction_patterns) or
+            ("recommendations" in message_lower and any(word in message_lower for word in ["attractions", "activities", "museums", "things to do"])) or
+            ("looking for" in message_lower and any(city in message_lower for city in ["paris", "tokyo", "london", "rome", "barcelona", "amsterdam"]))):
             return ConversationIntent.ATTRACTIONS
-            
-        else:
-            return ConversationIntent.GENERAL
+        
+        # Packing list keywords (check before destination to avoid "recommend" false positive)
+        packing_patterns = [
+            "pack", "packing", "what to bring", "luggage", "suitcase", 
+            "backpack", "what should i take", "packing list",
+            "packing recommendations", "what to pack"
+        ]
+        if any(pattern in message_lower for pattern in packing_patterns):
+            return ConversationIntent.PACKING_LIST
+        
+        # Destination recommendation keywords (more specific now)
+        destination_patterns = [
+            "where to go", "choose a destination", "suggest a place", 
+            "where should i travel", "help me choose", "pick a destination",
+            "where to visit", "destination recommendations", "suggest somewhere",
+            "travel destination", "vacation destination"
+        ]
+        
+        # Only trigger destination if it's clearly about choosing a destination (not just "recommend")
+        if (any(pattern in message_lower for pattern in destination_patterns) or
+            ("recommend" in message_lower and any(word in message_lower for word in ["destination", "place", "somewhere", "where"]))):
+            return ConversationIntent.DESTINATION_RECOMMENDATION
+        
+        return ConversationIntent.GENERAL
     
     @staticmethod
     def can_share_data_between_services(from_intent: ConversationIntent, to_intent: ConversationIntent) -> List[str]:
